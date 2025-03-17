@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Blackjack Card Counting Trainer – Multiplayer (Iterative with Test Mode)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    h1, h2, h3 {
+      color: #333;
+    }
+    .card {
+      display: inline-block;
+      width: 50px;
+      height: 70px;
+      border: 1px solid #000;
+      border-radius: 5px;
+      text-align: center;
+      line-height: 70px;
+      margin: 5px;
+      background: #fff;
+      font-weight: bold;
+    }
+    .section {
+      margin-bottom: 20px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    button {
+      margin: 5px;
+      padding: 10px;
+    }
+    #feedback, #outcome {
+      white-space: pre-line;
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    #configSection input, #configSection select {
+      width: 70px;
+      margin-right: 10px;
+    }
+    .playerArea {
+      margin-bottom: 10px;
+      padding: 5px;
+      border: 1px dashed #aaa;
+    }
+  </style>
+</head>
+<body>
+  <h1>Blackjack Card Counting Trainer – Multiplayer (Iterative with Test Mode)</h1>
+
+  <!-- Configuration Section -->
+  <div id="configSection" class="section">
+    <h2>Game Configuration</h2>
+    <label for="numDecks">Decks:</label>
+    <input type="number" id="numDecks" value="6" min="1">
+    &nbsp;&nbsp;
+    <label for="numSimPlayers">Players:</label>
+    <input type="number" id="numSimPlayers" value="1" min="0">
+    &nbsp;&nbsp;
+    <label for="modeSelect">Mode:</label>
+    <select id="modeSelect">
+      <option value="practice">Practice</option>
+      <option value="test">Test</option>
+    </select>
+    &nbsp;&nbsp;
+    <!-- New fields for Test Mode configuration -->
+    <span id="testConfig" style="display:none;">
+      <label for="testMin">Test Min:</label>
+      <input type="number" id="testMin" value="0.3" step="0.1" min="0" max="1">
+      <label for="testMax">Test Max:</label>
+      <input type="number" id="testMax" value="0.7" step="0.1" min="0" max="1">
+    </span>
+    <button id="startGame">Start Game</button>
+  </div>
+
+  <!-- Game Area -->
+  <div id="gameArea" style="display:none;">
+    <div id="dealerSection" class="section">
+      <h2>Dealer's Hand</h2>
+      <div id="dealerCards"></div>
+    </div>
+    <div id="playersContainer" class="section">
+      <h2>Players</h2>
+      <!-- Player areas will be created here dynamically -->
+    </div>
+    <div id="inputSection" class="section">
+      <h2>Your Input</h2>
+      <!-- This area applies only to the user (Player 1) -->
+      <label for="runningGuess">Running Count Guess:</label>
+      <input type="number" id="runningGuess" step="1"><br>
+      <label for="trueGuess">True Count Guess:</label>
+      <input type="number" id="trueGuess" step="0.1"><br>
+      <label for="decision">Your Decision:</label>
+      <select id="decision">
+        <option value="Hit">Hit</option>
+        <option value="Stand">Stand</option>
+        <option value="Double">Double</option>
+        <option value="Split">Split</option>
+      </select><br>
+      <button id="submitDecision">Submit Decision</button>
+    </div>
+    <div id="feedbackSection" class="section">
+      <h2>Feedback</h2>
+      <div id="feedback"></div>
+    </div>
+    <div id="roundOutcome" class="section">
+      <h2>Round Outcome</h2>
+      <div id="outcome"></div>
+    </div>
+    <button id="nextRound">Next Round</button>
+  </div>
+
+  <script>
+    // Tolerance for true count guesses
+    const TRUE_COUNT_TOLERANCE = 0.2;
+
+    // Global game state variables
+    let shoe = [];
+    let runningCount = 0;
+    let dealerHand = [];
+    let players = [];  // Each player: { name, isUser, hand (array of cards) }
+    let trueCount = 0;
+    let numDecks = 6;
+    let numSimPlayers = 1; // Additional players besides the user
+    let userTurnActive = true; // True while user's turn is in progress
+    let isTestMode = false;    // Whether we're in Test Mode
+    let testRound = false;     // In Test Mode, whether this round requires count guessing
+
+    // ----------------------------
+    // Utility Functions
+    // ----------------------------
+    function createShoe(numDecks) {
+      let singleDeck = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+      let newShoe = [];
+      for (let i = 0; i < numDecks; i++) {
+        for (let card of singleDeck) {
+          for (let j = 0; j < 4; j++) {
+            newShoe.push(card);
+          }
+        }
+      }
+      // Shuffle the shoe
+      for (let i = newShoe.length - 1; i > 0; i--) {
+        let j = Math.floor(Math.random() * (i + 1));
+        [newShoe[i], newShoe[j]] = [newShoe[j], newShoe[i]];
+      }
+      return newShoe;
+    }
+
+    function cardValue(card) {
+      if (["J", "Q", "K"].includes(card)) return 10;
+      if (card === "A") return 11;
+      return parseInt(card);
+    }
+
+    function updateRunningCount(count, card) {
+      if (["2", "3", "4", "5", "6"].includes(card)) return count + 1;
+      else if (["10", "J", "Q", "K", "A"].includes(card)) return count - 1;
+      return count;
+    }
+
+    function handValue(hand) {
+      let total = 0, aces = 0;
+      for (let card of hand) {
+        if (card === "A") { aces++; total += 11; }
+        else if (["J", "Q", "K"].includes(card)) total += 10;
+        else total += parseInt(card);
+      }
+      while (total > 21 && aces > 0) {
+        total -= 10;
+        aces--;
+      }
+      return total;
+    }
+
+    function isSoft(hand) {
+      let total = 0, aces = 0;
+      for (let card of hand) {
+        if (card === "A") { aces++; total += 11; }
+        else if (["J", "Q", "K"].includes(card)) total += 10;
+        else total += parseInt(card);
+      }
+      return (aces > 0 && total <= 21);
+    }
+
+    // ----------------------------
+    // Strategy Functions (No Surrender)
+    // ----------------------------
+    function basicStrategy(hand, dealerCard, canDouble=true) {
+      let total = handValue(hand);
+      let soft = isSoft(hand);
+      let dealerVal = (dealerCard === "A") ? 11 : cardValue(dealerCard);
+      if (soft) {
+        if (total >= 19) return "Stand";
+        if (total === 18) {
+          if ([3,4,5,6].includes(dealerVal) && canDouble) return "Double";
+          else if ([2,7,8].includes(dealerVal)) return "Stand";
+          else return "Hit";
+        }
+        if (total === 17) {
+          if ([3,4,5,6].includes(dealerVal) && canDouble) return "Double";
+          else return "Hit";
+        }
+        return "Hit";
+      } else {
+        if (total >= 17) return "Stand";
+        if (total >= 13 && total <= 16) {
+          if (dealerVal >= 2 && dealerVal <= 6) return "Stand";
+          else return "Hit";
+        }
+        if (total === 12) {
+          if (dealerVal >= 4 && dealerVal <= 6) return "Stand";
+          else return "Hit";
+        }
+        if (total === 11) return canDouble ? "Double" : "Hit";
+        if (total === 10) {
+          if (dealerVal >= 2 && dealerVal <= 9 && canDouble) return "Double";
+          else return "Hit";
+        }
+        if (total === 9) {
+          if (dealerVal >= 3 && dealerVal <= 6 && canDouble) return "Double";
+          else return "Hit";
+        }
+        return "Hit";
+      }
+    }
+
+    // Perfect play with count-based deviations (no surrender)
+    function perfectPlay(hand, dealerCard, trueCount, canDouble=true) {
+      let total = handValue(hand);
+      let softHand = isSoft(hand);
+      let dealerVal = (dealerCard === "A") ? 11 : cardValue(dealerCard);
+      if (hand.length === 2) {
+        if (!softHand) {
+          if (total === 16 && dealerVal === 10 && trueCount >= 0) return "Stand";
+          if (total === 15 && dealerVal === 10 && trueCount >= 4) return "Stand";
+          if (total === 15 && dealerVal === 9 && trueCount >= 2) return "Stand";
+          if (total === 12 && dealerVal === 3 && trueCount >= 2) return "Stand";
+          if (total === 12 && dealerVal === 2 && trueCount >= 3) return "Stand";
+          if (total === 9 && dealerVal === 2 && trueCount >= 1 && canDouble) return "Double";
+          if (total === 10 && dealerVal === 10 && trueCount >= 4 && canDouble) return "Double";
+          if (total === 9 && dealerVal === 7 && trueCount >= 3 && canDouble) return "Double";
+          if (total === 11 && dealerCard === "A" && trueCount >= 1 && canDouble) return "Double";
+        }
+        if (softHand && total === 18) {
+          if (dealerVal === 9 && trueCount < 0) return "Hit";
+          if (dealerVal === 10 && trueCount < 1) return "Hit";
+          if (dealerCard === "A" && trueCount < 2) return "Hit";
+        }
+      }
+      return basicStrategy(hand, dealerCard, canDouble);
+    }
+
+    // For simulated players we use basic strategy (simulate one decision).
+    function simulatePlayerTurn(player) {
+      let decision = basicStrategy(player.hand, dealerHand[0], true);
+      document.getElementById("playerDecision_" + players.indexOf(player)).innerText = "Decision: " + decision;
+      if (decision === "Hit") {
+        let card = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card);
+        player.hand.push(card);
+      } else if (decision === "Double") {
+        let card = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card);
+        player.hand.push(card);
+      }
+    }
+
+    // ----------------------------
+    // UI Update Functions
+    // ----------------------------
+    function displayCards(elementId, hand, hideHole=false) {
+      let container = document.getElementById(elementId);
+      container.innerHTML = "";
+      hand.forEach((card, index) => {
+        let cardDiv = document.createElement("div");
+        cardDiv.className = "card";
+        if (hideHole && index === 1) {
+          cardDiv.innerHTML = "??";
+        } else {
+          cardDiv.innerHTML = card;
+        }
+        container.appendChild(cardDiv);
+      });
+    }
+
+    function updatePlayersDisplay() {
+      let container = document.getElementById("playersContainer");
+      container.innerHTML = "";
+      players.forEach((player, idx) => {
+        let playerDiv = document.createElement("div");
+        playerDiv.className = "playerArea";
+        let header = document.createElement("h3");
+        header.innerText = player.name;
+        playerDiv.appendChild(header);
+        let cardsDiv = document.createElement("div");
+        cardsDiv.id = "playerCards_" + idx;
+        cardsDiv.innerHTML = player.hand.map(card => `<div class="card">${card}</div>`).join("");
+        playerDiv.appendChild(cardsDiv);
+        let decisionP = document.createElement("p");
+        decisionP.id = "playerDecision_" + idx;
+        playerDiv.appendChild(decisionP);
+        container.appendChild(playerDiv);
+      });
+    }
+
+    function showFeedback(message) {
+      document.getElementById("feedback").innerText = message;
+    }
+
+    function showOutcome(message) {
+      document.getElementById("outcome").innerText = message;
+    }
+
+    // ----------------------------
+    // Game Round Functions
+    // ----------------------------
+    function initializePlayers() {
+      players = [];
+      players.push({ name: "You", isUser: true, hand: [] });
+      for (let i = 1; i <= numSimPlayers; i++) {
+        players.push({ name: "Player " + (i + 1), isUser: false, hand: [] });
+      }
+    }
+
+    function startRound() {
+      // Clear previous feedback and outcome.
+      showFeedback("");
+      showOutcome("");
+      document.getElementById("submitDecision").disabled = false;
+      document.getElementById("runningGuess").value = "";
+      document.getElementById("trueGuess").value = "";
+
+      // In Test Mode, determine if this round is a count test round.
+      if (isTestMode) {
+        let testMin = parseFloat(document.getElementById("testMin").value);
+        let testMax = parseFloat(document.getElementById("testMax").value);
+        // Choose a random threshold between testMin and testMax.
+        let threshold = Math.random() * (testMax - testMin) + testMin;
+        testRound = (Math.random() < threshold);
+        if (!testRound) {
+          document.getElementById("runningGuess").disabled = true;
+          document.getElementById("trueGuess").disabled = true;
+        } else {
+          document.getElementById("runningGuess").disabled = false;
+          document.getElementById("trueGuess").disabled = false;
+        }
+      } else {
+        document.getElementById("runningGuess").disabled = false;
+        document.getElementById("trueGuess").disabled = false;
+      }
+
+      // If shoe is low, reinitialize.
+      if (shoe.length < 20) {
+        shoe = createShoe(numDecks);
+        runningCount = 0;
+      }
+      // Reset dealer and players’ hands.
+      dealerHand = [];
+      players.forEach(player => player.hand = []);
+
+      // Deal dealer hand (2 cards; hide hole card initially)
+      dealerHand.push(shoe.pop());
+      runningCount = updateRunningCount(runningCount, dealerHand[0]);
+      dealerHand.push(shoe.pop());
+      // Do not update count for hole card until revealed.
+
+      // Deal 2 cards to each player.
+      players.forEach(player => {
+        let card1 = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card1);
+        let card2 = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card2);
+        player.hand.push(card1, card2);
+      });
+
+      // Calculate true count.
+      let remainingDecks = shoe.length / 52;
+      trueCount = Math.round((runningCount / remainingDecks) * 100) / 100;
+
+      // Update displays.
+      displayCards("dealerCards", dealerHand, true);
+      updatePlayersDisplay();
+      userTurnActive = true;
+    }
+
+    // Handle user's iterative decision.
+    function handleUserDecision() {
+      if (!userTurnActive) return;
+      let user = players[0];
+      let feedbackMsg = "";
+      // In Test Mode, process count guesses only if testRound is true.
+      if (isTestMode && testRound) {
+        let runningGuess = parseFloat(document.getElementById("runningGuess").value);
+        let trueGuess = parseFloat(document.getElementById("trueGuess").value);
+        feedbackMsg = "Actual Running Count: " + runningCount +
+                      "\nActual True Count: " + trueCount;
+        if (!isNaN(runningGuess)) {
+          feedbackMsg += "\nYour Running Count guess: " + runningGuess +
+                         (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
+        }
+        if (!isNaN(trueGuess)) {
+          feedbackMsg += "\nYour True Count guess: " + trueGuess +
+                         (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
+        }
+      } else if (isTestMode && !testRound) {
+        feedbackMsg = "This round is NOT a count test round.";
+      } else {
+        // In Practice Mode, always process count guesses.
+        let runningGuess = parseFloat(document.getElementById("runningGuess").value);
+        let trueGuess = parseFloat(document.getElementById("trueGuess").value);
+        feedbackMsg = "Actual Running Count: " + runningCount +
+                      "\nActual True Count: " + trueCount;
+        if (!isNaN(runningGuess)) {
+          feedbackMsg += "\nYour Running Count guess: " + runningGuess +
+                         (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
+        }
+        if (!isNaN(trueGuess)) {
+          feedbackMsg += "\nYour True Count guess: " + trueGuess +
+                         (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
+        }
+      }
+      // Compute perfect play decision.
+      let perfectDecision = perfectPlay(user.hand, dealerHand[0], trueCount, true);
+      feedbackMsg += "\nPerfect Play Decision: " + perfectDecision;
+      let userDecision = document.getElementById("decision").value;
+      if (userDecision === perfectDecision) {
+        feedbackMsg += "\nYour decision was CORRECT for this action!";
+      } else {
+        feedbackMsg += "\nYour decision was INCORRECT for this action!";
+      }
+      showFeedback(feedbackMsg);
+
+      // Process user's decision.
+      if (userDecision === "Hit") {
+        let card = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card);
+        user.hand.push(card);
+        updatePlayersDisplay();
+        document.getElementById("runningGuess").value = "";
+        document.getElementById("trueGuess").value = "";
+        if (handValue(user.hand) > 21) {
+          showFeedback(feedbackMsg + "\nYou busted!");
+          finishUserTurn();
+        }
+      } else if (userDecision === "Double") {
+        let card = shoe.pop();
+        runningCount = updateRunningCount(runningCount, card);
+        user.hand.push(card);
+        updatePlayersDisplay();
+        finishUserTurn();
+      } else if (userDecision === "Stand") {
+        finishUserTurn();
+      } else if (userDecision === "Split") {
+        showFeedback(feedbackMsg + "\nNote: Splitting is not fully implemented in this demo.");
+        finishUserTurn();
+      }
+    }
+
+    function finishUserTurn() {
+      userTurnActive = false;
+      document.getElementById("submitDecision").disabled = true;
+      players.forEach(player => {
+        if (!player.isUser) {
+          simulatePlayerTurn(player);
+        }
+      });
+      resolveRound();
+    }
+
+    // Resolve dealer turn and determine outcomes.
+    function resolveRound() {
+      runningCount = updateRunningCount(runningCount, dealerHand[1]);
+      while (handValue(dealerHand) < 17) {
+        let card = shoe.pop();
+        dealerHand.push(card);
+        runningCount = updateRunningCount(runningCount, card);
+      }
+      displayCards("dealerCards", dealerHand, false);
+      let outcomeMsg = "";
+      let dealerTotal = handValue(dealerHand);
+      players.forEach(player => {
+        let total = handValue(player.hand);
+        outcomeMsg += player.name + " (" + total + "): ";
+        if (total > 21) outcomeMsg += "Busted. Lose.\n";
+        else if (dealerTotal > 21 || total > dealerTotal) outcomeMsg += "Win!\n";
+        else if (total === dealerTotal) outcomeMsg += "Push.\n";
+        else outcomeMsg += "Lose.\n";
+      });
+      showOutcome(outcomeMsg);
+    }
+
+    // ----------------------------
+    // Event Listeners
+    // ----------------------------
+    // Show/hide test mode configuration inputs when mode changes.
+    document.getElementById("modeSelect").addEventListener("change", function() {
+      if (this.value === "test") {
+        document.getElementById("testConfig").style.display = "inline";
+      } else {
+        document.getElementById("testConfig").style.display = "none";
+      }
+    });
+
+    document.getElementById("startGame").addEventListener("click", function() {
+      numDecks = parseInt(document.getElementById("numDecks").value);
+      numSimPlayers = parseInt(document.getElementById("numSimPlayers").value);
+      let mode = document.getElementById("modeSelect").value;
+      isTestMode = (mode === "test");
+      shoe = createShoe(numDecks);
+      runningCount = 0;
+      initializePlayers();
+      document.getElementById("configSection").style.display = "none";
+      document.getElementById("gameArea").style.display = "block";
+      startRound();
+    });
+
+    document.getElementById("submitDecision").addEventListener("click", function() {
+      handleUserDecision();
+    });
+
+    document.getElementById("nextRound").addEventListener("click", function() {
+      startRound();
+      document.getElementById("submitDecision").disabled = false;
+    });
+  </script>
+</body>
+</html>
