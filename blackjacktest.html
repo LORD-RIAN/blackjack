@@ -68,13 +68,14 @@
       <option value="test">Test</option>
     </select>
     &nbsp;&nbsp;
-    <!-- New fields for Test Mode configuration -->
+    <!-- New config for Test Mode countdown -->
     <span id="testConfig" style="display:none;">
       <label for="testMin">Test Min:</label>
-      <input type="number" id="testMin" value="0.3" step="0.1" min="0" max="1">
+      <input type="number" id="testMin" value="2" min="1">
       <label for="testMax">Test Max:</label>
-      <input type="number" id="testMax" value="0.7" step="0.1" min="0" max="1">
+      <input type="number" id="testMax" value="9" min="1">
     </span>
+    &nbsp;&nbsp;
     <button id="startGame">Start Game</button>
   </div>
 
@@ -116,20 +117,27 @@
   </div>
 
   <script>
-    // Tolerance for true count guesses
+    // Tolerance for true count guesses.
     const TRUE_COUNT_TOLERANCE = 0.2;
 
-    // Global game state variables
+    // Global game state variables.
     let shoe = [];
     let runningCount = 0;
     let dealerHand = [];
-    let players = [];  // Each player: { name, isUser, hand (array of cards) }
+    let players = [];  // Each player: { name, isUser, hand (array) }
     let trueCount = 0;
     let numDecks = 6;
-    let numSimPlayers = 1; // Additional players besides the user
-    let userTurnActive = true; // True while user's turn is in progress
-    let isTestMode = false;    // Whether we're in Test Mode
-    let testRound = false;     // In Test Mode, whether this round requires count guessing
+    let numSimPlayers = 1; // Additional (simulated) players besides the user.
+    let userTurnActive = true; // Flag indicating if the user's turn is ongoing.
+    let isTestMode = false;    // Whether we're in Test Mode.
+    let testRound = false;     // Whether this round is a test round.
+    let testRoundCountdown = undefined; // Rounds remaining until next test.
+    let testMin = 2, testMax = 9; // Defaults; can be configured.
+
+    // Helper: return a random integer between min and max (inclusive).
+    function randomInt(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
 
     // ----------------------------
     // Utility Functions
@@ -144,7 +152,7 @@
           }
         }
       }
-      // Shuffle the shoe
+      // Shuffle the shoe.
       for (let i = newShoe.length - 1; i > 0; i--) {
         let j = Math.floor(Math.random() * (i + 1));
         [newShoe[i], newShoe[j]] = [newShoe[j], newShoe[i]];
@@ -230,7 +238,6 @@
       }
     }
 
-    // Perfect play with count-based deviations (no surrender)
     function perfectPlay(hand, dealerCard, trueCount, canDouble=true) {
       let total = handValue(hand);
       let softHand = isSoft(hand);
@@ -256,7 +263,6 @@
       return basicStrategy(hand, dealerCard, canDouble);
     }
 
-    // For simulated players we use basic strategy (simulate one decision).
     function simulatePlayerTurn(player) {
       let decision = basicStrategy(player.hand, dealerHand[0], true);
       document.getElementById("playerDecision_" + players.indexOf(player)).innerText = "Decision: " + decision;
@@ -328,21 +334,36 @@
       }
     }
 
+    // In Test Mode, update the countdown for test rounds.
+    function updateTestCountdown() {
+      // Read testMin and testMax from config.
+      testMin = parseInt(document.getElementById("testMin").value);
+      testMax = parseInt(document.getElementById("testMax").value);
+      if (isNaN(testMin) || isNaN(testMax) || testMin > testMax) {
+        // Fallback to defaults if input is invalid.
+        testMin = 2; testMax = 9;
+      }
+      // If countdown is undefined or zero, reset it.
+      if (testRoundCountdown === undefined || testRoundCountdown <= 0) {
+        testRoundCountdown = randomInt(testMin, testMax);
+      }
+      // Decrement the countdown for the new round.
+      testRoundCountdown--;
+      // If after decrementing it reaches 0, this round is a test round.
+      testRound = (testRoundCountdown === 0);
+    }
+
     function startRound() {
-      // Clear previous feedback and outcome.
       showFeedback("");
       showOutcome("");
       document.getElementById("submitDecision").disabled = false;
       document.getElementById("runningGuess").value = "";
       document.getElementById("trueGuess").value = "";
 
-      // In Test Mode, determine if this round is a count test round.
+      // If in Test Mode, update the test round countdown.
       if (isTestMode) {
-        let testMin = parseFloat(document.getElementById("testMin").value);
-        let testMax = parseFloat(document.getElementById("testMax").value);
-        // Choose a random threshold between testMin and testMax.
-        let threshold = Math.random() * (testMax - testMin) + testMin;
-        testRound = (Math.random() < threshold);
+        updateTestCountdown();
+        // If not a test round, disable count inputs.
         if (!testRound) {
           document.getElementById("runningGuess").disabled = true;
           document.getElementById("trueGuess").disabled = true;
@@ -355,22 +376,16 @@
         document.getElementById("trueGuess").disabled = false;
       }
 
-      // If shoe is low, reinitialize.
       if (shoe.length < 20) {
         shoe = createShoe(numDecks);
         runningCount = 0;
       }
-      // Reset dealer and players’ hands.
       dealerHand = [];
       players.forEach(player => player.hand = []);
-
-      // Deal dealer hand (2 cards; hide hole card initially)
       dealerHand.push(shoe.pop());
       runningCount = updateRunningCount(runningCount, dealerHand[0]);
       dealerHand.push(shoe.pop());
-      // Do not update count for hole card until revealed.
-
-      // Deal 2 cards to each player.
+      // Hole card not counted yet.
       players.forEach(player => {
         let card1 = shoe.pop();
         runningCount = updateRunningCount(runningCount, card1);
@@ -378,54 +393,42 @@
         runningCount = updateRunningCount(runningCount, card2);
         player.hand.push(card1, card2);
       });
-
-      // Calculate true count.
       let remainingDecks = shoe.length / 52;
       trueCount = Math.round((runningCount / remainingDecks) * 100) / 100;
-
-      // Update displays.
       displayCards("dealerCards", dealerHand, true);
       updatePlayersDisplay();
       userTurnActive = true;
     }
 
-    // Handle user's iterative decision.
     function handleUserDecision() {
       if (!userTurnActive) return;
       let user = players[0];
       let feedbackMsg = "";
-      // In Test Mode, process count guesses only if testRound is true.
       if (isTestMode && testRound) {
         let runningGuess = parseFloat(document.getElementById("runningGuess").value);
         let trueGuess = parseFloat(document.getElementById("trueGuess").value);
         feedbackMsg = "Actual Running Count: " + runningCount +
                       "\nActual True Count: " + trueCount;
         if (!isNaN(runningGuess)) {
-          feedbackMsg += "\nYour Running Count guess: " + runningGuess +
-                         (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
+          feedbackMsg += "\nYour Running Count guess: " + runningGuess + (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
         }
         if (!isNaN(trueGuess)) {
-          feedbackMsg += "\nYour True Count guess: " + trueGuess +
-                         (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
+          feedbackMsg += "\nYour True Count guess: " + trueGuess + (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
         }
       } else if (isTestMode && !testRound) {
         feedbackMsg = "This round is NOT a count test round.";
       } else {
-        // In Practice Mode, always process count guesses.
         let runningGuess = parseFloat(document.getElementById("runningGuess").value);
         let trueGuess = parseFloat(document.getElementById("trueGuess").value);
         feedbackMsg = "Actual Running Count: " + runningCount +
                       "\nActual True Count: " + trueCount;
         if (!isNaN(runningGuess)) {
-          feedbackMsg += "\nYour Running Count guess: " + runningGuess +
-                         (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
+          feedbackMsg += "\nYour Running Count guess: " + runningGuess + (runningGuess === runningCount ? " (Correct)" : " (Incorrect)");
         }
         if (!isNaN(trueGuess)) {
-          feedbackMsg += "\nYour True Count guess: " + trueGuess +
-                         (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
+          feedbackMsg += "\nYour True Count guess: " + trueGuess + (Math.abs(trueGuess - trueCount) <= TRUE_COUNT_TOLERANCE ? " (Correct)" : " (Incorrect)");
         }
       }
-      // Compute perfect play decision.
       let perfectDecision = perfectPlay(user.hand, dealerHand[0], trueCount, true);
       feedbackMsg += "\nPerfect Play Decision: " + perfectDecision;
       let userDecision = document.getElementById("decision").value;
@@ -435,8 +438,6 @@
         feedbackMsg += "\nYour decision was INCORRECT for this action!";
       }
       showFeedback(feedbackMsg);
-
-      // Process user's decision.
       if (userDecision === "Hit") {
         let card = shoe.pop();
         runningCount = updateRunningCount(runningCount, card);
@@ -471,9 +472,12 @@
         }
       });
       resolveRound();
+      // If this was a test round, reset the testRoundCountdown.
+      if (isTestMode && testRound) {
+        testRoundCountdown = randomInt(testMin, testMax);
+      }
     }
 
-    // Resolve dealer turn and determine outcomes.
     function resolveRound() {
       runningCount = updateRunningCount(runningCount, dealerHand[1]);
       while (handValue(dealerHand) < 17) {
@@ -498,9 +502,9 @@
     // ----------------------------
     // Event Listeners
     // ----------------------------
-    // Show/hide test mode configuration inputs when mode changes.
     document.getElementById("modeSelect").addEventListener("change", function() {
-      if (this.value === "test") {
+      // Show test configuration inputs only if Test Mode is selected.
+      if (document.getElementById("modeSelect").value === "test") {
         document.getElementById("testConfig").style.display = "inline";
       } else {
         document.getElementById("testConfig").style.display = "none";
@@ -512,6 +516,11 @@
       numSimPlayers = parseInt(document.getElementById("numSimPlayers").value);
       let mode = document.getElementById("modeSelect").value;
       isTestMode = (mode === "test");
+      if (isTestMode) {
+        testRoundCountdown = randomInt(parseInt(document.getElementById("testMin").value), parseInt(document.getElementById("testMax").value));
+      } else {
+        testRoundCountdown = undefined;
+      }
       shoe = createShoe(numDecks);
       runningCount = 0;
       initializePlayers();
